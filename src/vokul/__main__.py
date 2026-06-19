@@ -26,6 +26,9 @@ def main() -> None:
     add_parser.add_argument("--service", required=True)
     add_parser.add_argument("--totp", help=argparse.SUPPRESS, default=None)
     
+    add_totp_parser = subparsers.add_parser("add-totp")
+    add_totp_parser.add_argument("--service", required=True)
+    
     get_parser = subparsers.add_parser("get")
     get_parser.add_argument("--service", required=True)
     get_parser.add_argument("--show", action="store_true", help="Print password to terminal instead of clipboard")
@@ -69,7 +72,7 @@ def main() -> None:
             print(f"Success: Initialized clean vault database at {args.vault}")
 
         # Commands that require an unlocked vault
-        elif args.command in ("add", "get", "list", "search", "history", "totp"):
+        elif args.command in ("add", "add-totp", "get", "list", "search", "history", "totp"):
             if not manager.exists():
                 print("Error: No vault found. Run 'vokul init' first.", file=sys.stderr)
                 sys.exit(1)
@@ -85,24 +88,36 @@ def main() -> None:
                 manager.save()
                 print(f"Success: Stored credentials securely for '{args.service}'.")
                 
+            elif args.command == "add-totp":
+                totp_input = input(f"Enter TOTP secret for [{args.service}]: ").strip()
+                if not totp_input:
+                    print("Error: TOTP secret cannot be empty.", file=sys.stderr)
+                    sys.exit(1)
+                manager.set_secret(args.service, None, totp_input)
+                manager.save()
+                print(f"Success: Added TOTP secret securely for '{args.service}'.")
+                
             elif args.command == "get":
                 secret_dict = manager.get_secret(args.service)
-                if secret_dict and secret_dict.get("pass"):
-                    secret = secret_dict["pass"][0]
-                    if args.show:
-                        print(f"Password for {args.service}: {secret}")
+                if secret_dict:
+                    if secret_dict.get("pass"):
+                        secret = secret_dict["pass"][0]
+                        if args.show:
+                            print(f"Password for {args.service}: {secret}")
+                        else:
+                            try:
+                                pyperclip.copy(secret)
+                                print(f"Success: Password for [{args.service}] copied to clipboard!")
+                                for i in range(15, 0, -1):
+                                    print(f"Clearing clipboard in {i} seconds...", end="\r")
+                                    time.sleep(1)
+                                pyperclip.copy("")
+                                print("\nSuccess: Clipboard cleared securely.")
+                            except Exception as e:
+                                print(f"Clipboard Error: {e}. Defaulting to terminal display:")
+                                print(f"Password: {secret}")
                     else:
-                        try:
-                            pyperclip.copy(secret)
-                            print(f"Success: Password for [{args.service}] copied to clipboard!")
-                            for i in range(15, 0, -1):
-                                print(f"Clearing clipboard in {i} seconds...", end="\r")
-                                time.sleep(1)
-                            pyperclip.copy("")
-                            print("\nSuccess: Clipboard cleared securely.")
-                        except Exception as e:
-                            print(f"Clipboard Error: {e}. Defaulting to terminal display:")
-                            print(f"Password: {secret}")
+                        print(f"Notice: '{args.service}' does not have a password stored (TOTP-only profile).", file=sys.stderr)
                 else:
                     print(f"No entry found for service: '{args.service}'", file=sys.stderr)
 
@@ -132,14 +147,27 @@ def main() -> None:
                         label = "Current" if idx == 0 else f"Old ({idx})"
                         print(f" [{label}] {pw}")
                 else:
-                    print(f"No history found for '{args.service}'.")
+                    print(f"No history found or service contains only a TOTP profile.")
 
             elif args.command == "totp":
                 secret_dict = manager.get_secret(args.service)
                 if secret_dict and secret_dict.get("totp"):
                     try:
                         totp = pyotp.TOTP(secret_dict["totp"])
-                        print(f"TOTP code for {args.service}: {totp.now()}")
+                        code = totp.now()
+                        print(f"TOTP code for {args.service}: {code}")
+                        
+                        try:
+                            pyperclip.copy(code)
+                            print("Success: TOTP code copied to clipboard!")
+                            for i in range(15, 0, -1):
+                                print(f"Clearing clipboard in {i} seconds...", end="\r")
+                                time.sleep(1)
+                            pyperclip.copy("")
+                            print("\nSuccess: Clipboard cleared securely.")
+                        except Exception as e:
+                            print(f"Clipboard Error: {e}", file=sys.stderr)
+                            
                     except Exception as e:
                         print(f"Error generating TOTP: {e}", file=sys.stderr)
                 else:

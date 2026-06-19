@@ -80,14 +80,15 @@ class VaultManager:
         with open(self.filepath, "w", encoding="utf-8") as f:
             json.dump(payload, f, indent=2)
 
-    def set_secret(self, service: str, password: str, totp_secret: Optional[str] = None) -> None:
+    def set_secret(self, service: str, password: Optional[str] = None, totp_secret: Optional[str] = None) -> None:
         if service not in self._records:
             self._records[service] = {"pass": [], "totp": None}
         
-        # Only add to history if the password is new/changed
-        if password and (not self._records[service]["pass"] or self._records[service]["pass"][0] != password):
-            self._records[service]["pass"].insert(0, password)
-            self._records[service]["pass"] = self._records[service]["pass"][:3] # Keep last 3
+        # Only add to history if a non-empty password is provided
+        if password:
+            if not self._records[service]["pass"] or self._records[service]["pass"][0] != password:
+                self._records[service]["pass"].insert(0, password)
+                self._records[service]["pass"] = self._records[service]["pass"][:3] # Keep last 3
         
         if totp_secret:
             self._records[service]["totp"] = totp_secret
