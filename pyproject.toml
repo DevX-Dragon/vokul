@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=61.0.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "vokul"
+version = "0.1.0"
+description = "A secure, local-first CLI password manager"
+readme = "README.md"
+requires-python = ">=3.8"
+dependencies = [
+    "cryptography>=42.0.0",
+    "pyperclip"
+]
+
+[project.scripts]
+vokul = "vokul.__main__:main"
