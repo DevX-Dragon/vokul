@@ -6,8 +6,9 @@ import string
 import secrets
 import shutil
 import pyperclip
-
+import pyotp
 from pathlib import Path
+
 from vokul.core import VaultEngine, VaultManager, VaultError
 
 DEFAULT_VAULT_PATH = Path.home() / ".vokul" / "vault.vk"
@@ -18,15 +19,18 @@ def main() -> None:
     
     subparsers = parser.add_subparsers(dest="command")
     
+    # Core Commands
     subparsers.add_parser("init")
     
     add_parser = subparsers.add_parser("add")
     add_parser.add_argument("--service", required=True)
+    add_parser.add_argument("--totp", help=argparse.SUPPRESS, default=None)
     
     get_parser = subparsers.add_parser("get")
     get_parser.add_argument("--service", required=True)
-    get_parser.add_argument("--show", action="store_true", help="Print password to terminal")
+    get_parser.add_argument("--show", action="store_true", help="Print password to terminal instead of clipboard")
 
+    # Discovery Commands
     subparsers.add_parser("list")
 
     search_parser = subparsers.add_parser("search")
@@ -35,9 +39,13 @@ def main() -> None:
     hist_parser = subparsers.add_parser("history")
     hist_parser.add_argument("--service", required=True)
 
+    # Utilities
     gen_parser = subparsers.add_parser("generate")
     gen_parser.add_argument("--length", type=int, default=16)
     gen_parser.add_argument("--no-symbols", action="store_true")
+
+    totp_parser = subparsers.add_parser("totp")
+    totp_parser.add_argument("--service", required=True)
 
     destruct_parser = subparsers.add_parser("destruct")
     destruct_parser.add_argument("--force", action="store_true")
@@ -60,7 +68,8 @@ def main() -> None:
             manager.create_new_vault(mp)
             print(f"Success: Initialized clean vault database at {args.vault}")
 
-        elif args.command in ("add", "get", "list", "search", "history"):
+        # Commands that require an unlocked vault
+        elif args.command in ("add", "get", "list", "search", "history", "totp"):
             if not manager.exists():
                 print("Error: No vault found. Run 'vokul init' first.", file=sys.stderr)
                 sys.exit(1)
@@ -70,13 +79,16 @@ def main() -> None:
             
             if args.command == "add":
                 secret = getpass.getpass(f"Enter password for [{args.service}]: ")
-                manager.set_secret(args.service, secret)
+                totp_input = input("Enter optional TOTP secret (press Enter to skip): ").strip()
+                totp_secret = totp_input if totp_input else None
+                manager.set_secret(args.service, secret, totp_secret)
                 manager.save()
-                print(f"Success: Stored credentials securely for field '{args.service}'.")
+                print(f"Success: Stored credentials securely for '{args.service}'.")
                 
             elif args.command == "get":
-                secret = manager.get_secret(args.service)
-                if secret:
+                secret_dict = manager.get_secret(args.service)
+                if secret_dict and secret_dict.get("pass"):
+                    secret = secret_dict["pass"][0]
                     if args.show:
                         print(f"Password for {args.service}: {secret}")
                     else:
@@ -122,14 +134,28 @@ def main() -> None:
                 else:
                     print(f"No history found for '{args.service}'.")
 
+            elif args.command == "totp":
+                secret_dict = manager.get_secret(args.service)
+                if secret_dict and secret_dict.get("totp"):
+                    try:
+                        totp = pyotp.TOTP(secret_dict["totp"])
+                        print(f"TOTP code for {args.service}: {totp.now()}")
+                    except Exception as e:
+                        print(f"Error generating TOTP: {e}", file=sys.stderr)
+                else:
+                    print(f"No TOTP secret found for service: '{args.service}'", file=sys.stderr)
+
+        # Generate command
         elif args.command == "generate":
             chars = string.ascii_letters + string.digits
             if not args.no_symbols:
                 chars += "!@#$%^&*()-_=+[]{}|;:,.<>?"
             generated_password = "".join(secrets.choice(chars) for _ in range(args.length))
+            
             print("-" * 40)
             print(f"Generated Password: {generated_password}")
             print("-" * 40)
+            
             try:
                 pyperclip.copy(generated_password)
                 print("Copied to clipboard automatically!")
@@ -147,12 +173,16 @@ def main() -> None:
                     print("Error: Service name cannot be empty.", file=sys.stderr)
                     sys.exit(1)
                 
+                totp_opt = input("Enter optional TOTP secret (press Enter to skip): ").strip()
+                totp_secret = totp_opt if totp_opt else None
+                
                 mp = getpass.getpass("Enter your Master Password to unlock and save: ")
                 manager.load_and_decrypt(mp)
-                manager.set_secret(service, generated_password)
+                manager.set_secret(service, generated_password, totp_secret)
                 manager.save()
                 print(f"Success: Stored generated credentials securely for '{service}'.")
 
+        # Destruct command
         elif args.command == "destruct":
             vault_dir = args.vault.parent
             print("!" * 50)

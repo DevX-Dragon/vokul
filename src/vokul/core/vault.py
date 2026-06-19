@@ -3,17 +3,17 @@ import json
 import shutil
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Any
 
 from .crypto import VaultEngine
 from .exceptions import VaultStorageError
 
 class VaultManager:
-    
     def __init__(self, filepath: Path, engine: VaultEngine) -> None:
         self.filepath = Path(filepath)
         self.engine = engine
-        self._records: Dict[str, List[str]] = {}
+        # Data structure: {"service_name": {"pass": ["current", "old1", "old2"], "totp": "secret_key"}}
+        self._records: Dict[str, Dict[str, Any]] = {}
 
     def exists(self) -> bool:
         return self.filepath.exists()
@@ -41,21 +41,19 @@ class VaultManager:
         
         self._records = {}
         for k, v in raw_records.items():
-            if isinstance(v, str):
-                self._records[k] = [v]
+            # Migration logic: if an old record is just a list, convert it to the new dict structure
+            if isinstance(v, list):
+                self._records[k] = {"pass": v, "totp": None}
             else:
                 self._records[k] = v
 
     def backup_vault(self) -> None:
         if not self.exists():
             return
-        
         backup_dir = self.filepath.parent / "backups"
         backup_dir.mkdir(parents=True, exist_ok=True)
-        
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         backup_path = backup_dir / f"{self.filepath.name}.bak_{timestamp}"
-        
         shutil.copy2(self.filepath, backup_path)
 
     def save(self, salt: Optional[bytes] = None) -> None:
@@ -66,8 +64,9 @@ class VaultManager:
             with open(self.filepath, "r", encoding="utf-8") as f:
                 salt = base64.b64decode(json.load(f)["salt"])
 
+        # Auto-backup before saving changes
         self.backup_vault()
-
+        
         plaintext_bytes = json.dumps(self._records).encode("utf-8")
         nonce, ciphertext = self.engine.encrypt(plaintext_bytes)
 
@@ -81,21 +80,23 @@ class VaultManager:
         with open(self.filepath, "w", encoding="utf-8") as f:
             json.dump(payload, f, indent=2)
 
-    def set_secret(self, service: str, password: str) -> None:
-        if service in self._records:
-            if self._records[service][0] != password:
-                self._records[service].insert(0, password)
-                self._records[service] = self._records[service][:3]
-        else:
-            self._records[service] = [password]
+    def set_secret(self, service: str, password: str, totp_secret: Optional[str] = None) -> None:
+        if service not in self._records:
+            self._records[service] = {"pass": [], "totp": None}
+        
+        # Only add to history if the password is new/changed
+        if password and (not self._records[service]["pass"] or self._records[service]["pass"][0] != password):
+            self._records[service]["pass"].insert(0, password)
+            self._records[service]["pass"] = self._records[service]["pass"][:3] # Keep last 3
+        
+        if totp_secret:
+            self._records[service]["totp"] = totp_secret
 
-    def get_secret(self, service: str) -> Optional[str]:
-        if service in self._records and self._records[service]:
-            return self._records[service][0]
-        return None
+    def get_secret(self, service: str) -> Optional[Dict[str, Any]]:
+        return self._records.get(service)
 
     def get_history(self, service: str) -> List[str]:
-        return self._records.get(service, [])
+        return self._records.get(service, {}).get("pass", [])
 
     def list_services(self) -> List[str]:
         return sorted(self._records.keys())
