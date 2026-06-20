@@ -5,6 +5,7 @@ import time
 import string
 import secrets
 import shutil
+import json
 import pyperclip
 import pyotp
 from pathlib import Path
@@ -19,7 +20,6 @@ def main() -> None:
     
     subparsers = parser.add_subparsers(dest="command")
     
-    # Core Commands
     subparsers.add_parser("init")
     
     add_parser = subparsers.add_parser("add")
@@ -29,12 +29,18 @@ def main() -> None:
     add_totp_parser = subparsers.add_parser("add-totp")
     add_totp_parser.add_argument("--service", required=True)
     
+    edit_parser = subparsers.add_parser("edit")
+    edit_parser.add_argument("--service", required=True)
+    
+    delete_parser = subparsers.add_parser("delete")
+    delete_parser.add_argument("--service", required=True)
+    
     get_parser = subparsers.add_parser("get")
     get_parser.add_argument("--service", required=True)
     get_parser.add_argument("--show", action="store_true", help="Print password to terminal instead of clipboard")
 
-    # Discovery Commands
     subparsers.add_parser("list")
+    subparsers.add_parser("export")
 
     search_parser = subparsers.add_parser("search")
     search_parser.add_argument("query")
@@ -42,10 +48,10 @@ def main() -> None:
     hist_parser = subparsers.add_parser("history")
     hist_parser.add_argument("--service", required=True)
 
-    # Utilities
     gen_parser = subparsers.add_parser("generate")
     gen_parser.add_argument("--length", type=int, default=16)
     gen_parser.add_argument("--no-symbols", action="store_true")
+    gen_parser.add_argument("--memorable", action="store_true", help="Generate a phrase-based memorable password")
 
     totp_parser = subparsers.add_parser("totp")
     totp_parser.add_argument("--service", required=True)
@@ -71,8 +77,7 @@ def main() -> None:
             manager.create_new_vault(mp)
             print(f"Success: Initialized clean vault database at {args.vault}")
 
-        # Commands that require an unlocked vault
-        elif args.command in ("add", "add-totp", "get", "list", "search", "history", "totp"):
+        elif args.command in ("add", "add-totp", "edit", "delete", "get", "list", "search", "history", "totp", "export"):
             if not manager.exists():
                 print("Error: No vault found. Run 'vokul init' first.", file=sys.stderr)
                 sys.exit(1)
@@ -97,6 +102,55 @@ def main() -> None:
                 manager.save()
                 print(f"Success: Added TOTP secret securely for '{args.service}'.")
                 
+            elif args.command == "edit":
+                secret_dict = manager.get_secret(args.service)
+                if not secret_dict:
+                    print(f"Error: Service '{args.service}' not found.", file=sys.stderr)
+                    sys.exit(1)
+                
+                print(f"\n--- Editing Details for Service: {args.service} ---")
+                print("Leave blank and press Enter to keep existing records unchanged.")
+                
+                new_pass = getpass.getpass("Enter new password: ")
+                new_totp = input("Enter new TOTP setup seed: ").strip()
+                
+                modified = False
+                if new_pass:
+                    manager.set_secret(args.service, new_pass, None)
+                    modified = True
+                if new_totp:
+                    manager.set_secret(args.service, None, new_totp)
+                    modified = True
+                
+                if modified:
+                    manager.save()
+                    print(f"Success: Modified data fields updated for '{args.service}'.")
+                else:
+                    print("No modifications provided. Keeping current records.")
+
+            elif args.command == "delete":
+                secret_dict = manager.get_secret(args.service)
+                if not secret_dict:
+                    print(f"Error: Service '{args.service}' does not exist.", file=sys.stderr)
+                    sys.exit(1)
+                    
+                confirm = input(f"Are you sure you want to completely delete '{args.service}'? (y/N): ").strip().lower()
+                if confirm in ("y", "yes"):
+                    manager.delete_secret(args.service)
+                    manager.save()
+                    print(f"Success: Purged entry '{args.service}' from database safely.")
+                else:
+                    print("Action cancelled.")
+
+            elif args.command == "export":
+                print("⚠️  CRITICAL WARNING: This will expose your entire vault database as unencrypted raw JSON strings.")
+                confirm = input("Type 'CONFIRM-EXPORT' to proceed: ").strip()
+                if confirm == "CONFIRM-EXPORT":
+                    exported_data = manager.export_vault_data()
+                    print("\n" + json.dumps(exported_data, indent=2))
+                else:
+                    print("Action aborted securely.")
+
             elif args.command == "get":
                 secret_dict = manager.get_secret(args.service)
                 if secret_dict:
@@ -173,12 +227,21 @@ def main() -> None:
                 else:
                     print(f"No TOTP secret found for service: '{args.service}'", file=sys.stderr)
 
-        # Generate command
         elif args.command == "generate":
-            chars = string.ascii_letters + string.digits
-            if not args.no_symbols:
-                chars += "!@#$%^&*()-_=+[]{}|;:,.<>?"
-            generated_password = "".join(secrets.choice(chars) for _ in range(args.length))
+            if args.memorable:
+                # High-entropy memorable clean wordpool
+                wordpool = (
+                    "anchor", "apple", "banana", "beacon", "blaze", "cobalt", "crypto", "dragon", 
+                    "echo", "falcon", "forest", "granite", "guitar", "horizon", "indigo", "jasper", 
+                    "kinetic", "lunar", "matrix", "nebula", "ozone", "phantom", "quantum", "radius", 
+                    "shadow", "sunset", "timber", "vortex", "wild", "winter", "zenith", "amber"
+                )
+                generated_password = "-".join(secrets.choice(wordpool) for _ in range(4))
+            else:
+                chars = string.ascii_letters + string.digits
+                if not args.no_symbols:
+                    chars += "!@#$%^&*()-_=+[]{}|;:,.<>?"
+                generated_password = "".join(secrets.choice(chars) for _ in range(args.length))
             
             print("-" * 40)
             print(f"Generated Password: {generated_password}")
@@ -210,7 +273,6 @@ def main() -> None:
                 manager.save()
                 print(f"Success: Stored generated credentials securely for '{service}'.")
 
-        # Destruct command
         elif args.command == "destruct":
             vault_dir = args.vault.parent
             print("!" * 50)
@@ -239,6 +301,9 @@ def main() -> None:
 
     except VaultError as err:
         print(f"Security Error: {err}", file=sys.stderr)
+        # Anti-Brute-Force secure delay throttles systematic execution automation attacks
+        print("Enforcing secure throttling system penalty cooldown... Please wait.", file=sys.stderr)
+        time.sleep(2.5)
         sys.exit(1)
     except KeyboardInterrupt:
         print("\nOperation cancelled.", file=sys.stderr)

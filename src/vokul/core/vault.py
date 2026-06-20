@@ -1,6 +1,7 @@
 import base64
 import json
 import shutil
+import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Any
@@ -32,20 +33,66 @@ class VaultManager:
             salt = base64.b64decode(payload["salt"])
             nonce = base64.b64decode(payload["nonce"])
             ciphertext = base64.b64decode(payload["ciphertext"])
+            
+            self.engine.unlock(master_password, salt)
+            plaintext_bytes = self.engine.decrypt(nonce, ciphertext)
         except (json.JSONDecodeError, KeyError, ValueError) as exc:
-            raise VaultStorageError("Invalid or corrupted vault file format.") from exc
+            # Main vault file parsing issue: Attempt self-healing from the latest valid backup
+            backup_records = self._attempt_backup_recovery(master_password)
+            if backup_records is not None:
+                print("⚠️  Warning: Main vault file was corrupted! Restored from latest backup.", file=sys.stderr)
+                self._records = backup_records
+                self.save()  # Repair main vault file
+                return
+            raise VaultStorageError("Corrupted vault file format and backup recovery failed.") from exc
+        except Exception as exc:
+            # Bad credentials or low-level cryptographic decryption failures
+            # Attempt recovery just in case corruption caused decryption failure with valid key
+            backup_records = self._attempt_backup_recovery(master_password)
+            if backup_records is not None:
+                print("⚠️  Warning: Main file decryption failed! Restored from latest valid backup.", file=sys.stderr)
+                self._records = backup_records
+                self.save()
+                return
+            raise VaultStorageError("Invalid master password or unreadable vault data.") from exc
 
-        self.engine.unlock(master_password, salt)
-        plaintext_bytes = self.engine.decrypt(nonce, ciphertext)
         raw_records = json.loads(plaintext_bytes.decode("utf-8"))
-        
         self._records = {}
         for k, v in raw_records.items():
-            # Migration logic: if an old record is just a list, convert it to the new dict structure
             if isinstance(v, list):
                 self._records[k] = {"pass": v, "totp": None}
             else:
                 self._records[k] = v
+
+    def _attempt_backup_recovery(self, master_password: str) -> Optional[Dict[str, Any]]:
+        backup_dir = self.filepath.parent / "backups"
+        if not backup_dir.exists():
+            return None
+            
+        # Locate all backups sorted newest to oldest
+        backups = sorted(backup_dir.glob(f"{self.filepath.name}.bak_*"), key=lambda p: p.stat().st_mtime, reverse=True)
+        for backup_path in backups:
+            try:
+                with open(backup_path, "r", encoding="utf-8") as f:
+                    payload = json.load(f)
+                salt = base64.b64decode(payload["salt"])
+                nonce = base64.b64decode(payload["nonce"])
+                ciphertext = base64.b64decode(payload["ciphertext"])
+                
+                self.engine.unlock(master_password, salt)
+                plaintext_bytes = self.engine.decrypt(nonce, ciphertext)
+                raw_records = json.loads(plaintext_bytes.decode("utf-8"))
+                
+                recovered: Dict[str, Dict[str, Any]] = {}
+                for k, v in raw_records.items():
+                    if isinstance(v, list):
+                        recovered[k] = {"pass": v, "totp": None}
+                    else:
+                        recovered[k] = v
+                return recovered
+            except Exception:
+                continue  # Try next oldest backup
+        return None
 
     def backup_vault(self) -> None:
         if not self.exists():
@@ -60,11 +107,17 @@ class VaultManager:
         if not self.engine.is_unlocked:
             raise VaultStorageError("Cannot save data while engine is locked.")
         
+        if salt is None and self.exists():
+            try:
+                with open(self.filepath, "r", encoding="utf-8") as f:
+                    salt = base64.b64decode(json.load(f)["salt"])
+            except Exception:
+                pass
+                
         if salt is None:
-            with open(self.filepath, "r", encoding="utf-8") as f:
-                salt = base64.b64decode(json.load(f)["salt"])
+            salt = self.engine.generate_salt()
 
-        # Auto-backup before saving changes
+        # Generate atomic transaction fallback point
         self.backup_vault()
         
         plaintext_bytes = json.dumps(self._records).encode("utf-8")
@@ -84,17 +137,25 @@ class VaultManager:
         if service not in self._records:
             self._records[service] = {"pass": [], "totp": None}
         
-        # Only add to history if a non-empty password is provided
         if password:
             if not self._records[service]["pass"] or self._records[service]["pass"][0] != password:
                 self._records[service]["pass"].insert(0, password)
-                self._records[service]["pass"] = self._records[service]["pass"][:3] # Keep last 3
+                self._records[service]["pass"] = self._records[service]["pass"][:3]
         
         if totp_secret:
             self._records[service]["totp"] = totp_secret
 
+    def delete_secret(self, service: str) -> bool:
+        if service in self._records:
+            del self._records[service]
+            return True
+        return False
+
     def get_secret(self, service: str) -> Optional[Dict[str, Any]]:
         return self._records.get(service)
+
+    def export_vault_data(self) -> Dict[str, Any]:
+        return self._records
 
     def get_history(self, service: str) -> List[str]:
         return self._records.get(service, {}).get("pass", [])
