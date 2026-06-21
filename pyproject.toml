@@ -11,6 +11,7 @@ requires-python = ">=3.8"
 dependencies = [
     "cryptography>=42.0.0",
     "pyperclip"
+    "pyotp"
 ]
 
 [project.scripts]
