@@ -13,11 +13,17 @@ class VaultManager:
     def __init__(self, filepath: Path, engine: VaultEngine) -> None:
         self.filepath = Path(filepath)
         self.engine = engine
-        # Data structure: {"service_name": {"pass": ["current", "old1", "old2"], "totp": "secret_key"}}
         self._records: Dict[str, Dict[str, Any]] = {}
 
     def exists(self) -> bool:
-        return self.filepath.exists()
+        # The vault exists if the main file is there...
+        if self.filepath.exists():
+            return True
+        # OR if the main file is missing but backups exist!
+        backup_dir = self.filepath.parent / "backups"
+        if backup_dir.exists() and list(backup_dir.glob(f"{self.filepath.name}.bak_*")):
+            return True
+        return False
 
     def create_new_vault(self, master_password: str) -> None:
         salt = self.engine.generate_salt()
@@ -36,21 +42,28 @@ class VaultManager:
             
             self.engine.unlock(master_password, salt)
             plaintext_bytes = self.engine.decrypt(nonce, ciphertext)
-        except (json.JSONDecodeError, KeyError, ValueError) as exc:
-            # Main vault file parsing issue: Attempt self-healing from the latest valid backup
+            
+        except (FileNotFoundError, json.JSONDecodeError, KeyError, ValueError) as exc:
+            # Main vault file missing OR corrupted: Attempt self-healing from backups
             backup_records = self._attempt_backup_recovery(master_password)
             if backup_records is not None:
-                print("⚠️  Warning: Main vault file was corrupted! Restored from latest backup.", file=sys.stderr)
+                if isinstance(exc, FileNotFoundError):
+                    print("\n⚠️  Notice: Main vault file missing! Restored automatically from latest backup.", file=sys.stderr)
+                else:
+                    print("\n⚠️  Warning: Main vault file corrupted! Restored automatically from latest backup.", file=sys.stderr)
                 self._records = backup_records
-                self.save()  # Repair main vault file
+                self.save()  # This will instantly repair/recreate the missing main file
                 return
+                
+            if isinstance(exc, FileNotFoundError):
+                raise VaultStorageError("Vault file is missing and no valid backups were found.") from exc
             raise VaultStorageError("Corrupted vault file format and backup recovery failed.") from exc
+            
         except Exception as exc:
-            # Bad credentials or low-level cryptographic decryption failures
-            # Attempt recovery just in case corruption caused decryption failure with valid key
+            # Decryption failed (usually wrong password, but could be severe corruption)
             backup_records = self._attempt_backup_recovery(master_password)
             if backup_records is not None:
-                print("⚠️  Warning: Main file decryption failed! Restored from latest valid backup.", file=sys.stderr)
+                print("\n⚠️  Warning: Main file decryption failed! Restored automatically from latest valid backup.", file=sys.stderr)
                 self._records = backup_records
                 self.save()
                 return
@@ -69,7 +82,6 @@ class VaultManager:
         if not backup_dir.exists():
             return None
             
-        # Locate all backups sorted newest to oldest
         backups = sorted(backup_dir.glob(f"{self.filepath.name}.bak_*"), key=lambda p: p.stat().st_mtime, reverse=True)
         for backup_path in backups:
             try:
@@ -91,11 +103,12 @@ class VaultManager:
                         recovered[k] = v
                 return recovered
             except Exception:
-                continue  # Try next oldest backup
+                continue  # Password might be wrong, or this backup is also corrupted. Try the next older one.
         return None
 
     def backup_vault(self) -> None:
-        if not self.exists():
+        # Prevent trying to backup a file that doesn't exist yet (important during recovery)
+        if not self.filepath.exists():
             return
         backup_dir = self.filepath.parent / "backups"
         backup_dir.mkdir(parents=True, exist_ok=True)
@@ -107,7 +120,7 @@ class VaultManager:
         if not self.engine.is_unlocked:
             raise VaultStorageError("Cannot save data while engine is locked.")
         
-        if salt is None and self.exists():
+        if salt is None and self.filepath.exists():
             try:
                 with open(self.filepath, "r", encoding="utf-8") as f:
                     salt = base64.b64decode(json.load(f)["salt"])
@@ -117,7 +130,6 @@ class VaultManager:
         if salt is None:
             salt = self.engine.generate_salt()
 
-        # Generate atomic transaction fallback point
         self.backup_vault()
         
         plaintext_bytes = json.dumps(self._records).encode("utf-8")
