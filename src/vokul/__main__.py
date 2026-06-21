@@ -35,7 +35,7 @@ def get_master_password(is_json: bool) -> str:
     if mp:
         return mp
     if is_json:
-        print(json.dumps({"error": "Integration Mode Active: VOKUL_MASTER_PASSWORD environment variable not set."}))
+        print(json.dumps({"error": "Integration Mode Active: VOKUL_MASTER_PASSWORD environment variable not set.", "type": "AuthError"}))
         sys.exit(1)
     return getpass.getpass("Enter your Master Password: ")
 
@@ -50,15 +50,16 @@ def main() -> None:
     subparsers.add_parser("check")
     subparsers.add_parser("version")
     
+    # Upgraded to allow non-interactive execution via parameters for extensions
     add_parser = subparsers.add_parser("add")
     add_parser.add_argument("--service", required=True)
-    add_parser.add_argument("--totp", help=argparse.SUPPRESS, default=None)
-    
-    add_totp_parser = subparsers.add_parser("add-totp")
-    add_totp_parser.add_argument("--service", required=True)
+    add_parser.add_argument("--password", help="Specify password directly (non-interactive)")
+    add_parser.add_argument("--totp", help="Specify TOTP secret directly (non-interactive)")
     
     edit_parser = subparsers.add_parser("edit")
     edit_parser.add_argument("--service", required=True)
+    edit_parser.add_argument("--password", help="Specify new password directly")
+    edit_parser.add_argument("--totp", help="Specify new TOTP secret directly")
     
     delete_parser = subparsers.add_parser("delete")
     delete_parser.add_argument("--service", required=True)
@@ -134,7 +135,7 @@ def main() -> None:
             else:
                 print(f"Success: Initialized clean vault database at {args.vault}")
 
-        elif args.command in ("add", "add-totp", "edit", "delete", "get", "list", "search", "history", "totp", "export"):
+        elif args.command in ("add", "edit", "delete", "get", "list", "search", "history", "totp", "export"):
             if not manager.exists():
                 if args.json:
                     print(json.dumps({"error": "No vault found. Initialization required."}))
@@ -145,16 +146,28 @@ def main() -> None:
             mp = get_master_password(args.json)
             manager.load_and_decrypt(mp)
             
-            if args.command == "add":
-                if args.json:
-                    print(json.dumps({"error": "Interactive adds not supported in JSON mode yet."}))
-                    sys.exit(1)
-                secret = getpass.getpass(f"Enter password for [{args.service}]: ")
-                totp_input = input("Enter optional TOTP secret (press Enter to skip): ").strip()
-                totp_secret = totp_input if totp_input else None
-                manager.set_secret(args.service, secret, totp_secret)
+            if args.command in ("add", "edit"):
+                # Determine password source
+                password = args.password
+                if not password:
+                    if args.json:
+                        print(json.dumps({"error": "Non-interactive write requires --password parameter."}))
+                        sys.exit(1)
+                    password = getpass.getpass(f"Enter password for [{args.service}]: ")
+                
+                # Determine TOTP source
+                totp_secret = args.totp
+                if not totp_secret and not args.json:
+                    totp_input = input("Enter optional TOTP secret (press Enter to skip): ").strip()
+                    totp_secret = totp_input if totp_input else None
+                
+                manager.set_secret(args.service, password, totp_secret)
                 manager.save()
-                print(f"Success: Stored credentials securely for '{args.service}'.")
+                
+                if args.json:
+                    print(json.dumps({"status": "success", "action": args.command, "service": args.service}))
+                else:
+                    print(f"Success: Stored credentials securely for '{args.service}'.")
                 
             elif args.command == "delete":
                 secret_dict = manager.get_secret(args.service)
@@ -232,7 +245,67 @@ def main() -> None:
                     else:
                         print(f"No services found matching '{args.query}'.")
 
-            # ... [Keep your existing 'totp', 'history', 'export', 'generate', 'destruct' logic here] ...
+            elif args.command == "totp":
+                secret_dict = manager.get_secret(args.service)
+                if secret_dict and secret_dict.get("totp"):
+                    totp_code = pyotp.TOTP(secret_dict["totp"]).now()
+                    if args.json:
+                        print(json.dumps({"service": args.service, "totp": totp_code}))
+                    else:
+                        print(f"Current TOTP token for {args.service}: {totp_code}")
+                else:
+                    if args.json: print(json.dumps({"error": "No TOTP config found for this service"}))
+                    else: print(f"Error: No TOTP profile active for '{args.service}'", file=sys.stderr)
+
+            elif args.command == "history":
+                history = manager.get_history(args.service)
+                if args.json:
+                    print(json.dumps({"service": args.service, "history": history}))
+                else:
+                    if history:
+                        print(f"\nPassword history for '{args.service}' (Newest first):")
+                        for idx, pwd in enumerate(history, 1): print(f" [{idx}] {pwd}")
+                    else:
+                        print(f"No password history tracked for '{args.service}'.")
+
+            elif args.command == "export":
+                data = manager.export_vault_data()
+                if args.json:
+                    print(json.dumps({"vault_data": data}))
+                else:
+                    print(json.dumps(data, indent=2))
+
+        elif args.command == "generate":
+            if args.memorable:
+                words = ["correct", "horse", "battery", "staple", "vibe", "crypto", "vault", "cyber", "secure", "python"]
+                password = "-".join(secrets.choice(words) for _ in range(4))
+            else:
+                chars = string.ascii_letters + string.digits
+                if not args.no-symbols:
+                    chars += "!@#$%^&*"
+                password = "".join(secrets.choice(chars) for _ in range(args.length))
+                
+            if args.json:
+                print(json.dumps({"generated_password": password}))
+            else:
+                print(f"Generated Password: {password}")
+
+        elif args.command == "destruct":
+            if args.json:
+                if args.force:
+                    if args.vault.exists(): args.vault.unlink()
+                    print(json.dumps({"status": "success", "message": "Vault vaporized completely."}))
+                else:
+                    print(json.dumps({"error": "Destruct command requires --force in JSON mode."}))
+            else:
+                if not args.force:
+                    confirm = input("⚠️ WARNING: This will permanently vaporize your entire vault database. Proceed? (type 'DESTROY'): ")
+                    if confirm != "DESTROY":
+                        print("Aborted.")
+                        sys.exit(0)
+                if args.vault.exists():
+                    args.vault.unlink()
+                print("💥 Success: Vault database completely shredded and removed from disk.")
 
         elif not args.command:
             print(ASCII_ART)
