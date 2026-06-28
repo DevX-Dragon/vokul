@@ -1,0 +1,42 @@
+name: Publish to PyPI
+
+on:
+  release:
+    types: [published]
+
+jobs:
+  publish:
+    name: Upload release to PyPI
+    runs-on: ubuntu-latest
+    
+    # Crucial for Trusted Publishing (OIDC)
+    permissions:
+      id-token: write
+      contents: read
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      # Fetches the assets attached to the release that just triggered this run
+      - name: Download Release Artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p dist
+          gh release download ${{ github.event.release.tag_name }} --pattern "*.tar.gz" --dir dist/
+          gh release download ${{ github.event.release.tag_name }} --pattern "*.whl" --dir dist/
+
+      # Optional: Debug step to ensure files downloaded correctly
+      - name: List downloaded files
+        run: ls -la dist/
+
+      # The correct, official Python setup action
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      # Publishes to PyPI using OIDC
+      - name: Publish package distributions to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
