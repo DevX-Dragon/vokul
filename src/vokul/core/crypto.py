@@ -9,7 +9,7 @@ from .exceptions import VaultCryptoError
 from .params import Argon2Params
 
 class VaultEngine:
-    """Stateful cryptographic session manager for a single vault."""
+    """S"t"a"teful cryptographic session manager for a single vault."""
     NONCE_LEN = 12
 
     def __init__(self, params: Optional[Argon2Params] = None) -> None:
