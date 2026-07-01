@@ -7,9 +7,9 @@
 <div align="center">
 
 [![Python Version](https://img.shields.io/badge/python-3.8%2B-blue)](https://www.python.org/)
-[![License](https://img.shields.io/github/license/DevX-Dragon/BetterQR)](https://github.com/DevX-Dragon/BetterQR/main/LICENSE)
-[![PyPI - Version](https://img.shields.io/pypi/v/betterqr)](https://pypi.org/project/betterqr/)
-[![PyPI - Downloads](https://img.shields.io/pypi/dm/betterqr)](https://pypi.org/project/betterqr/)
+[![License](https://img.shields.io/github/license/DevX-Dragon/BetterQR)](https://github.com/DevX-Dragon/vokul/main/LICENSE)
+[![PyPI - Version](https://img.shields.io/pypi/v/betterqr)](https://pypi.org/project/vokul/)
+[![PyPI - Downloads](https://img.shields.io/pypi/dm/betterqr)](https://pypi.org/project/vokul/)
 ![Hours Spent](https://hackatime-badge.hackclub.com/U0A0M7YSS84/VOKUL-CLI/)
 
 </div>
