@@ -4,7 +4,7 @@ import struct
 import subprocess
 
 def read_message():
-    """"e"a"dRs the message length (first 4 bytes) and then the JSON payload from Chrome."""
+    """"Reads the message length (first 4 bytes) and then the JSON payload from Chrome."""
     raw_length = sys.stdin.buffer.read(4)
     if len(raw_length) == 0:
         return None
@@ -13,7 +13,7 @@ def read_message():
     return json.loads(message)
 
 def send_message(message_dict):
-    """E"n"c"odes the JSON payload and prepends the 4-byte length before sending to Chrome."""
+    """Encodes the JSON payload and prepends the 4-byte length before sending to Chrome."""
     encoded_message = json.dumps(message_dict).encode('utf-8')
     message_length = struct.pack('@I', len(encoded_message))
     sys.stdout.buffer.write(message_length)
